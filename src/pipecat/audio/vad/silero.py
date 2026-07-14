@@ -20,6 +20,7 @@ from pipecat.audio.vad.vad_analyzer import VADAnalyzer, VADParams
 
 # How often should we reset internal model state
 _MODEL_RESET_STATES_TIME = 5.0
+_INT16_DIVISOR = np.float32(32768.0)
 
 try:
     import onnxruntime
@@ -162,6 +163,7 @@ class SileroVADAnalyzer(VADAnalyzer):
                 model_file_path = str(impresources.files(package_path).joinpath(model_name))
 
         self._model = SileroOnnxModel(model_file_path, force_onnx_cpu=True)
+        self._audio_float32 = np.empty(0, dtype=np.float32)
 
         self._last_reset_time = 0
 
@@ -186,6 +188,7 @@ class SileroVADAnalyzer(VADAnalyzer):
             )
 
         super().set_sample_rate(sample_rate)
+        self._audio_float32 = np.empty(self.num_frames_required(), dtype=np.float32)
 
     def num_frames_required(self) -> int:
         """Get the number of audio frames required for VAD analysis.
@@ -206,8 +209,12 @@ class SileroVADAnalyzer(VADAnalyzer):
         """
         try:
             audio_int16 = np.frombuffer(buffer, np.int16)
-            # Divide by 32768 because we have signed 16-bit data.
-            audio_float32 = audio_int16.astype(np.float32) / 32768.0
+            audio_float32 = self._audio_float32
+            if audio_int16.size != audio_float32.size:
+                audio_float32 = np.empty(audio_int16.size, dtype=np.float32)
+            audio_float32[...] = audio_int16
+            # Normalize signed 16-bit samples in the reusable float32 buffer.
+            np.divide(audio_float32, _INT16_DIVISOR, out=audio_float32)
             new_confidence = self._model(audio_float32, self.sample_rate)[0]
 
             # We need to reset the model from time to time because it doesn't
