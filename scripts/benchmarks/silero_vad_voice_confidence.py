@@ -11,6 +11,7 @@ import argparse
 import gc
 import json
 import math
+import statistics
 import threading
 import time
 import tracemalloc
@@ -21,6 +22,7 @@ from pipecat.audio.vad.silero import SileroVADAnalyzer
 
 _WARMUP_CALLS = 32
 _TIMED_CALLS = 1024
+_TIMING_TRIALS = 7
 _ALLOCATION_CALLS = 16
 _METRICS = ("ns/frame", "tracemalloc_peak_bytes/frame", "retained_input_bytes")
 
@@ -79,15 +81,19 @@ def _new_warm_analyzer(sample_rate: int, frames: list[bytes]) -> SileroVADAnalyz
 def _measure_ns_per_frame(
     analyzer: SileroVADAnalyzer, sample_rate: int, frames: list[bytes]
 ) -> float:
+    """Return the median of independent stateful timing trials."""
+    samples: list[float] = []
     sink = 0.0
-    start = time.perf_counter_ns()
-    for index in range(_TIMED_CALLS):
-        sink += _confidence(analyzer, frames[index % len(frames)])
-    elapsed = time.perf_counter_ns() - start
+    for trial in range(_TIMING_TRIALS):
+        start = time.perf_counter_ns()
+        for index in range(_TIMED_CALLS):
+            sink += _confidence(analyzer, frames[(trial + index) % len(frames)])
+        elapsed = time.perf_counter_ns() - start
+        samples.append(elapsed / _TIMED_CALLS)
     if not math.isfinite(sink):
         raise RuntimeError("Silero VAD timing result was not consumed")
     _assert_model_state(analyzer, sample_rate)
-    return elapsed / _TIMED_CALLS
+    return statistics.median(samples)
 
 
 def _measure_transient_peak_bytes(

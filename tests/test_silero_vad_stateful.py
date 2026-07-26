@@ -5,10 +5,10 @@
 #
 
 import gc
-import time
 import unittest
 import weakref
 from importlib import resources
+from unittest.mock import patch
 
 import numpy as np
 
@@ -70,8 +70,8 @@ class TestSileroVADStateful(unittest.TestCase):
     ) -> tuple[SileroVADAnalyzer, SileroOnnxModel]:
         analyzer = SileroVADAnalyzer()
         analyzer.set_sample_rate(sample_rate)
-        # Keep the periodic reset outside the deterministic state comparison.
-        analyzer._last_reset_time = time.time()
+        # The tests patch the clock to keep periodic reset outside the state comparison.
+        analyzer._last_reset_time = 1.0
         return analyzer, SileroOnnxModel(_model_path(), force_onnx_cpu=True)
 
     def _reference_confidence(self, reference: SileroOnnxModel, buffer: bytes, sample_rate: int):
@@ -98,7 +98,8 @@ class TestSileroVADStateful(unittest.TestCase):
         np.testing.assert_allclose(actual, expected, rtol=1e-6, atol=1e-7)
         self._assert_model_state_equal(analyzer, reference)
 
-    def test_confidence_and_recurrent_state_match_reference_for_each_rate(self):
+    @patch("pipecat.audio.vad.silero.time.time", return_value=1.0)
+    def test_confidence_and_recurrent_state_match_reference_for_each_rate(self, _mock_time):
         """Real voice_confidence matches an independent conversion/model sequence."""
         for sample_rate in (8000, 16000):
             with self.subTest(sample_rate=sample_rate):
@@ -107,7 +108,8 @@ class TestSileroVADStateful(unittest.TestCase):
                 for frame in (silence, speech_like, varied, speech_like, alternating, silence):
                     self._assert_call_matches_reference(analyzer, reference, frame, sample_rate)
 
-    def test_invalid_buffers_return_zero_without_changing_recurrent_state(self):
+    @patch("pipecat.audio.vad.silero.time.time", return_value=1.0)
+    def test_invalid_buffers_return_zero_without_changing_recurrent_state(self, _mock_time):
         """Invalid empty and short frames preserve model state at both supported rates."""
         for sample_rate in (8000, 16000):
             with self.subTest(sample_rate=sample_rate):
@@ -132,14 +134,15 @@ class TestSileroVADStateful(unittest.TestCase):
                     self.assertEqual(model._last_sr, last_sr_before)
                     self.assertEqual(model._last_batch_size, last_batch_size_before)
 
-    def test_reset_reuse_and_sample_rate_transitions_match_reference(self):
+    @patch("pipecat.audio.vad.silero.time.time", return_value=1.0)
+    def test_reset_reuse_and_sample_rate_transitions_match_reference(self, _mock_time):
         """Resetting and alternating valid 8/16 kHz frames preserve recurrent behavior."""
         analyzer = SileroVADAnalyzer()
         reference = SileroOnnxModel(_model_path(), force_onnx_cpu=True)
 
         for sample_rate in (16000, 8000, 16000):
             analyzer.set_sample_rate(sample_rate)
-            analyzer._last_reset_time = time.time()
+            analyzer._last_reset_time = 1.0
             self.assertEqual(analyzer.num_frames_required(), _frame_size(sample_rate))
             self._assert_call_matches_reference(
                 analyzer, reference, _frames(sample_rate)[2], sample_rate
@@ -147,10 +150,11 @@ class TestSileroVADStateful(unittest.TestCase):
 
         analyzer._model.reset_states()
         reference.reset_states()
-        analyzer._last_reset_time = time.time()
+        analyzer._last_reset_time = 1.0
         self._assert_call_matches_reference(analyzer, reference, _frames(16000)[3], 16000)
 
-    def test_onnx_run_is_synchronous_and_reusable_input_isolated(self):
+    @patch("pipecat.audio.vad.silero.time.time", return_value=1.0)
+    def test_onnx_run_is_synchronous_and_reusable_input_isolated(self, _mock_time):
         """The ONNX boundary cannot retain or mutate a future reusable conversion array."""
         for sample_rate in (8000, 16000):
             with self.subTest(sample_rate=sample_rate):
