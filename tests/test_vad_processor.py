@@ -5,6 +5,11 @@
 #
 
 import unittest
+from decimal import Decimal
+from fractions import Fraction
+from unittest.mock import AsyncMock, patch
+
+import numpy as np
 
 from pipecat.audio.vad.vad_analyzer import VADAnalyzer, VADState
 from pipecat.frames.frames import (
@@ -46,13 +51,43 @@ class TestVADProcessor(unittest.IsolatedAsyncioTestCase):
 
     def test_rejects_invalid_speech_activity_period_at_construction(self):
         """Test that invalid activity periods fail during processor construction."""
-        for speech_activity_period in ("0.2", float("nan"), float("inf"), float("-inf"), True):
+        for speech_activity_period in (
+            "0.2",
+            float("nan"),
+            float("inf"),
+            float("-inf"),
+            Decimal("NaN"),
+            Decimal("Infinity"),
+            True,
+        ):
             with self.subTest(speech_activity_period=speech_activity_period):
-                with self.assertRaisesRegex(ValueError, "finite int or float"):
+                with self.assertRaisesRegex(ValueError, "finite real number"):
                     VADProcessor(
                         vad_analyzer=MockVADAnalyzer([VADState.SPEAKING]),
                         speech_activity_period=speech_activity_period,
                     )
+
+    def test_accepts_real_speech_activity_period_at_construction(self):
+        """Test that the processor forwards supported real periods to its controller."""
+
+        class IntSubclass(int):
+            pass
+
+        for speech_activity_period in (
+            np.float64(0.2),
+            np.float32(0.2),
+            np.int64(1),
+            Decimal("0.2"),
+            Decimal("1e999999"),
+            Fraction(1, 5),
+            Fraction(10**1000, 3),
+            IntSubclass(1),
+        ):
+            with self.subTest(speech_activity_period=speech_activity_period):
+                VADProcessor(
+                    vad_analyzer=MockVADAnalyzer([VADState.SPEAKING]),
+                    speech_activity_period=speech_activity_period,
+                )
 
     async def test_forwards_audio_frames(self):
         """Test that audio frames are forwarded downstream."""
@@ -64,6 +99,28 @@ class TestVADProcessor(unittest.IsolatedAsyncioTestCase):
             frames_to_send=[self._make_audio_frame()],
             expected_down_frames=[SpeechControlParamsFrame, InputAudioRawFrame],
         )
+
+    async def test_default_period_throttles_user_speaking_frames(self):
+        """Test that the default period emits one activity frame for repeated speech."""
+        processor = VADProcessor(
+            vad_analyzer=MockVADAnalyzer([VADState.SPEAKING, VADState.SPEAKING])
+        )
+        controller = processor._vad_controller
+
+        with (
+            patch.object(processor, "broadcast_frame", new_callable=AsyncMock) as broadcast_frame,
+            patch(
+                "pipecat.audio.vad.vad_controller.time.monotonic",
+                side_effect=[0.01, 0.01, 0.11, 0.11],
+            ),
+        ):
+            await controller.process_frame(self._make_audio_frame())
+            await controller.process_frame(self._make_audio_frame())
+
+        activity_calls = [
+            call for call in broadcast_frame.await_args_list if call.args[0] is UserSpeakingFrame
+        ]
+        self.assertEqual(len(activity_calls), 1)
 
     async def test_pushes_started_speaking_frame(self):
         """Test that VADUserStartedSpeakingFrame is pushed when speech starts."""

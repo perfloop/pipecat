@@ -51,7 +51,7 @@ class VADProcessor(FrameProcessor):
 
         Args:
             vad_analyzer: The VADAnalyzer instance for processing audio.
-            speech_activity_period: Finite int or float minimum interval in
+            speech_activity_period: Finite real-number minimum interval in
                 seconds between UserSpeakingFrame pushes. A non-positive value
                 bypasses throttling and pushes a frame for every SPEAKING
                 input. Defaults to 0.2.
@@ -61,7 +61,7 @@ class VADProcessor(FrameProcessor):
             **kwargs: Additional arguments passed to parent class.
 
         Raises:
-            ValueError: If speech_activity_period is not a finite int or float.
+            ValueError: If speech_activity_period is not a finite real number.
         """
         super().__init__(**kwargs)
         self._vad_controller = VADController(
