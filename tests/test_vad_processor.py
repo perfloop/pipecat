@@ -46,7 +46,7 @@ class TestVADProcessor(unittest.IsolatedAsyncioTestCase):
 
     def test_rejects_invalid_speech_activity_period(self):
         """Test that invalid activity periods fail during processor construction."""
-        for speech_activity_period in ("0.2", float("nan"), True):
+        for speech_activity_period in ("0.2", float("nan"), float("inf"), float("-inf"), True):
             with self.subTest(speech_activity_period=speech_activity_period):
                 with self.assertRaisesRegex(ValueError, "finite int or float"):
                     VADProcessor(
@@ -102,25 +102,47 @@ class TestVADProcessor(unittest.IsolatedAsyncioTestCase):
             ],
         )
 
-    async def test_pushes_user_speaking_frame(self):
-        """Test that UserSpeakingFrame is pushed while speaking."""
-        analyzer = MockVADAnalyzer([VADState.SPEAKING, VADState.SPEAKING])
-        processor = VADProcessor(vad_analyzer=analyzer, speech_activity_period=0)
+    async def test_pushes_first_user_speaking_frame_with_large_period(self):
+        """Test that a large integer period pushes activity on the first SPEAKING input."""
+        processor = VADProcessor(
+            vad_analyzer=MockVADAnalyzer([VADState.SPEAKING]),
+            speech_activity_period=10**400,
+        )
 
-        # Audio frames are forwarded first, then VAD processes and broadcasts VAD frames.
-        # A zero period intentionally emits an activity frame for every speaking input.
         await run_test(
             processor,
-            frames_to_send=[self._make_audio_frame(), self._make_audio_frame()],
+            frames_to_send=[self._make_audio_frame()],
             expected_down_frames=[
                 SpeechControlParamsFrame,
                 InputAudioRawFrame,
                 VADUserStartedSpeakingFrame,
                 UserSpeakingFrame,
-                InputAudioRawFrame,
-                UserSpeakingFrame,
             ],
         )
+
+    async def test_pushes_user_speaking_frame(self):
+        """Test that non-positive periods push UserSpeakingFrame while speaking."""
+        for speech_activity_period in (0, -0.2):
+            with self.subTest(speech_activity_period=speech_activity_period):
+                analyzer = MockVADAnalyzer([VADState.SPEAKING, VADState.SPEAKING])
+                processor = VADProcessor(
+                    vad_analyzer=analyzer,
+                    speech_activity_period=speech_activity_period,
+                )
+
+                # Audio frames are forwarded first, then VAD processes and broadcasts VAD frames.
+                await run_test(
+                    processor,
+                    frames_to_send=[self._make_audio_frame(), self._make_audio_frame()],
+                    expected_down_frames=[
+                        SpeechControlParamsFrame,
+                        InputAudioRawFrame,
+                        VADUserStartedSpeakingFrame,
+                        UserSpeakingFrame,
+                        InputAudioRawFrame,
+                        UserSpeakingFrame,
+                    ],
+                )
 
     async def test_no_vad_frames_on_starting_state(self):
         """Test that STARTING state doesn't push VAD frames."""

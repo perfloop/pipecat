@@ -91,8 +91,8 @@ class VADController(BaseObject):
         Raises:
             ValueError: If speech_activity_period is not a finite int or float.
         """
-        if type(speech_activity_period) not in (int, float) or not math.isfinite(
-            speech_activity_period
+        if type(speech_activity_period) not in (int, float) or (
+            type(speech_activity_period) is float and not math.isfinite(speech_activity_period)
         ):
             raise ValueError("speech_activity_period must be a finite int or float")
 

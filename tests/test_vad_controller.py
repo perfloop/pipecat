@@ -99,13 +99,34 @@ class TestVADController(unittest.IsolatedAsyncioTestCase):
 
     def test_rejects_invalid_speech_activity_period(self):
         """Test that invalid activity periods fail during controller construction."""
-        for speech_activity_period in ("0.2", float("nan"), True):
+        for speech_activity_period in ("0.2", float("nan"), float("inf"), float("-inf"), True):
             with self.subTest(speech_activity_period=speech_activity_period):
                 with self.assertRaisesRegex(ValueError, "finite int or float"):
                     VADController(
                         MockVADAnalyzer(),
                         speech_activity_period=speech_activity_period,
                     )
+
+    async def test_large_speech_activity_period_emits_first_activity(self):
+        """Test that a large integer period emits activity on the first SPEAKING input."""
+        analyzer = MockVADAnalyzer()
+        controller = VADController(analyzer, speech_activity_period=10**400)
+        activity_count = 0
+
+        @controller.event_handler("on_speech_activity")
+        async def on_speech_activity(_controller):
+            nonlocal activity_count
+            activity_count += 1
+
+        await controller.process_frame(
+            StartFrame(audio_in_sample_rate=16000, audio_out_sample_rate=16000)
+        )
+        analyzer.set_next_state(VADState.SPEAKING)
+        await controller.process_frame(
+            InputAudioRawFrame(audio=b"\x00" * 1024, sample_rate=16000, num_channels=1)
+        )
+
+        self.assertEqual(activity_count, 1)
 
     async def test_speech_activity_event(self):
         """Test that on_speech_activity uses elapsed rather than wall-clock time."""
