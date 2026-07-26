@@ -12,7 +12,6 @@ import inspect
 import json
 import math
 import sys
-import time
 import tracemalloc
 from typing import Any
 
@@ -22,11 +21,9 @@ from pipecat.audio.vad.silero import SileroVADAnalyzer
 
 _ALLOCATION_CALLS = 16
 _METRICS = (
-    "ns/frame",
     "tracemalloc_peak_bytes/frame",
     "tracemalloc_conversion_bytes/frame",
 )
-_TIMING_CALLS = 1024
 _WARMUP_CALLS = 32
 
 
@@ -82,16 +79,6 @@ def _assert_inference_state(
         raise RuntimeError("Silero recurrent state became non-finite")
     if not bool(np.all(np.isfinite(np.asarray(context)))):
         raise RuntimeError("Silero recurrent context became non-finite")
-
-
-def _timed_ns_per_frame(analyzer: SileroVADAnalyzer, frames: list[bytes]) -> float:
-    """Measure the warmed real owner over complete frames."""
-    start = time.perf_counter_ns()
-    confidence_sum = _run_calls(analyzer, frames, _TIMING_CALLS)
-    elapsed = time.perf_counter_ns() - start
-    if confidence_sum < 0.0:
-        raise RuntimeError("unreachable confidence sink guard")
-    return elapsed / _TIMING_CALLS
 
 
 def _peak_tracemalloc_bytes_per_frame(analyzer: SileroVADAnalyzer, frames: list[bytes]) -> int:
@@ -177,14 +164,12 @@ def main() -> None:
     frames = _frames(frame_count)
 
     _run_calls(analyzer, frames, _WARMUP_CALLS)
-    analyzer._last_reset_time = time.time()
-    ns_per_frame = _timed_ns_per_frame(analyzer, frames)
+    analyzer._last_reset_time = float("inf")
     peak_bytes = _peak_tracemalloc_bytes_per_frame(analyzer, frames)
     conversion_bytes = _conversion_tracemalloc_bytes_per_frame(analyzer, frames)
     _assert_inference_state(analyzer, args.sample_rate, frame_count)
 
     values = {
-        "ns/frame": ns_per_frame,
         "tracemalloc_peak_bytes/frame": peak_bytes,
         "tracemalloc_conversion_bytes/frame": conversion_bytes,
     }
