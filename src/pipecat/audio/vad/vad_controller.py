@@ -13,7 +13,6 @@ and emit events when speech starts, stops, or is actively detected.
 import asyncio
 import math
 import time
-from numbers import Real
 
 from loguru import logger
 
@@ -80,22 +79,22 @@ class VADController(BaseObject):
 
         Args:
             vad_analyzer: The `VADAnalyzer` instance for processing audio.
-            speech_activity_period: Minimum interval in seconds between
-                `on_speech_activity` events. A non-positive value bypasses
-                throttling and emits an event for every SPEAKING input.
-                Defaults to 0.2.
+            speech_activity_period: Finite int or float minimum interval in
+                seconds between `on_speech_activity` events. A non-positive
+                value bypasses throttling and emits an event for every
+                SPEAKING input. Defaults to 0.2.
             audio_idle_timeout: Timeout in seconds to force speech stop
                 when no audio frames are received while in SPEAKING state.
                 This handles cases like mic mute mid-speech.
                 Set to 0 to disable. Defaults to 1.0.
 
         Raises:
-            ValueError: If speech_activity_period is not a finite real number.
+            ValueError: If speech_activity_period is not a finite int or float.
         """
-        if not isinstance(speech_activity_period, Real) or not math.isfinite(
+        if type(speech_activity_period) not in (int, float) or not math.isfinite(
             speech_activity_period
         ):
-            raise ValueError("speech_activity_period must be a finite real number")
+            raise ValueError("speech_activity_period must be a finite int or float")
 
         super().__init__()
         self._vad_analyzer = vad_analyzer

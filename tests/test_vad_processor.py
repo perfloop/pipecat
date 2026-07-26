@@ -46,9 +46,9 @@ class TestVADProcessor(unittest.IsolatedAsyncioTestCase):
 
     def test_rejects_invalid_speech_activity_period(self):
         """Test that invalid activity periods fail during processor construction."""
-        for speech_activity_period in ("0.2", float("nan")):
+        for speech_activity_period in ("0.2", float("nan"), True):
             with self.subTest(speech_activity_period=speech_activity_period):
-                with self.assertRaisesRegex(ValueError, "finite real number"):
+                with self.assertRaisesRegex(ValueError, "finite int or float"):
                     VADProcessor(
                         vad_analyzer=MockVADAnalyzer([VADState.SPEAKING]),
                         speech_activity_period=speech_activity_period,
