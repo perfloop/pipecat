@@ -15,6 +15,7 @@ import statistics
 import threading
 import time
 import tracemalloc
+from pathlib import Path
 
 import numpy as np
 
@@ -24,7 +25,7 @@ _WARMUP_CALLS = 32
 _TIMED_CALLS = 1024
 _TIMING_TRIALS = 17
 _ALLOCATION_CALLS = 16
-_METRICS = ("ns/frame", "tracemalloc_peak_bytes/op")
+_METRICS = ("ns/frame", "allocs/op", "tracemalloc_peak_bytes/op")
 
 
 def _frame_size(sample_rate: int) -> int:
@@ -96,6 +97,47 @@ def _measure_ns_per_frame(
     return statistics.median(samples)
 
 
+def _measure_float32_allocs_per_op(
+    analyzer: SileroVADAnalyzer, sample_rate: int, frames: list[bytes]
+) -> float:
+    """Count full-frame float32 allocations attributed to voice_confidence."""
+    if threading.active_count() != 1:
+        raise RuntimeError("allocation sampling requires one Python thread")
+
+    import memray
+
+    float32_bytes = _frame_size(sample_rate) * np.dtype(np.float32).itemsize
+    trace_path = Path(".perfloop-silero-vad-memray.bin")
+    trace_path.unlink(missing_ok=True)
+    sink = 0.0
+    try:
+        with memray.Tracker(str(trace_path), trace_python_allocators=True):
+            for index in range(_ALLOCATION_CALLS):
+                sink += _confidence(analyzer, frames[index % len(frames)])
+
+        allocations = 0
+        for record in memray.FileReader(trace_path).get_allocation_records():
+            if record.size != float32_bytes:
+                continue
+            try:
+                stack = record.stack_trace()
+            except NotImplementedError:
+                continue
+            if any(
+                function == "voice_confidence"
+                and filename.endswith("src/pipecat/audio/vad/silero.py")
+                for function, filename, _line in stack
+            ):
+                allocations += record.n_allocations
+    finally:
+        trace_path.unlink(missing_ok=True)
+
+    if not math.isfinite(sink):
+        raise RuntimeError("Silero VAD allocation result was not consumed")
+    _assert_model_state(analyzer, sample_rate)
+    return allocations / _ALLOCATION_CALLS
+
+
 def _measure_transient_peak_bytes(
     analyzer: SileroVADAnalyzer, sample_rate: int, frames: list[bytes]
 ) -> int:
@@ -138,6 +180,8 @@ def main() -> int:
 
     if args.metric == "ns/frame":
         value = _measure_ns_per_frame(analyzer, args.sample_rate, frames)
+    elif args.metric == "allocs/op":
+        value = _measure_float32_allocs_per_op(analyzer, args.sample_rate, frames)
     else:
         value = _measure_transient_peak_bytes(analyzer, args.sample_rate, frames)
 
