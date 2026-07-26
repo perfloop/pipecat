@@ -145,6 +145,102 @@ class TestUserUserTurnCompletionLLMServiceMixin(unittest.IsolatedAsyncioTestCase
         marker_frames = [f for f in pushed_frames if isinstance(f, LLMMarkerFrame)]
         self.assertEqual(len(marker_frames), 1)
 
+    async def test_short_markerless_text_flushes_at_response_end(self):
+        """A short markerless response keeps the existing end-of-response fallback."""
+        processor = MockProcessor()
+        pushed_frames = []
+        processor.push_frame = AsyncMock(
+            side_effect=lambda f, *args, **kwargs: pushed_frames.append(f)
+        )
+
+        markerless_text = "A short markerless response"
+        await processor._push_turn_text(markerless_text)
+        self.assertEqual([f for f in pushed_frames if isinstance(f, LLMTextFrame)], [])
+
+        await processor._turn_reset()
+        text_frames = [f for f in pushed_frames if isinstance(f, LLMTextFrame)]
+        self.assertEqual([f.text for f in text_frames], [markerless_text])
+        self.assertIsNone(processor._turn_marker)
+
+    async def test_marker_prefix_limit_is_independent_of_stream_chunking(self):
+        """The same markerless-prefix response has one verdict for any chunking."""
+
+        async def process_chunks(chunks):
+            processor = MockProcessor()
+            pushed_frames = []
+            processor.push_frame = AsyncMock(
+                side_effect=lambda f, *args, **kwargs: pushed_frames.append(f)
+            )
+            processor._start_incomplete_timeout = AsyncMock()
+            for chunk in chunks:
+                await processor._push_turn_text(chunk)
+            return processor, pushed_frames
+
+        prefix = "x" * 64
+        marker = USER_TURN_INCOMPLETE_SHORT_MARKER
+        one_chunk_processor, one_chunk_frames = await process_chunks([prefix + marker])
+        split_processor, split_frames = await process_chunks([prefix, marker])
+
+        def frame_summary(frames):
+            return [(type(frame), getattr(frame, "text", None)) for frame in frames]
+
+        expected_frames = [(LLMTextFrame, prefix), (LLMTextFrame, marker)]
+        self.assertEqual(frame_summary(one_chunk_frames), expected_frames)
+        self.assertEqual(frame_summary(split_frames), expected_frames)
+
+        for processor, pushed_frames in (
+            (one_chunk_processor, one_chunk_frames),
+            (split_processor, split_frames),
+        ):
+            text_frames = [f for f in pushed_frames if isinstance(f, LLMTextFrame)]
+            self.assertEqual([f.text for f in text_frames], [prefix, marker])
+            self.assertEqual([f for f in pushed_frames if isinstance(f, LLMMarkerFrame)], [])
+            self.assertEqual(processor._turn_marker, TurnMarker.PASSTHROUGH)
+            self.assertEqual(processor._turn_text_buffer, "")
+            processor._start_incomplete_timeout.assert_not_awaited()
+
+    async def test_markerless_text_streams_after_marker_prefix_limit(self):
+        """A markerless response forwards once its bounded search prefix is exhausted."""
+        processor = MockProcessor()
+        pushed_frames = []
+        processor.push_frame = AsyncMock(
+            side_effect=lambda f, *args, **kwargs: pushed_frames.append(f)
+        )
+
+        markerless_prefix = "x" * 64
+        await processor._push_turn_text(markerless_prefix)
+
+        text_frames = [f for f in pushed_frames if isinstance(f, LLMTextFrame)]
+        self.assertEqual([f.text for f in text_frames], [markerless_prefix])
+        self.assertEqual(processor._turn_marker, TurnMarker.PASSTHROUGH)
+        self.assertEqual(processor._turn_text_buffer, "")
+
+        await processor._push_turn_text(" continuation")
+        text_frames = [f for f in pushed_frames if isinstance(f, LLMTextFrame)]
+        self.assertEqual([f.text for f in text_frames], [markerless_prefix, " continuation"])
+
+        # Reset must not replay text that was already forwarded in passthrough mode.
+        await processor._turn_reset()
+        text_frames = [f for f in pushed_frames if isinstance(f, LLMTextFrame)]
+        self.assertEqual([f.text for f in text_frames], [markerless_prefix, " continuation"])
+        self.assertIsNone(processor._turn_marker)
+
+    async def test_marker_at_end_of_prefix_is_detected_before_passthrough(self):
+        """A marker inside the bounded prefix keeps its existing completion behavior."""
+        processor = MockProcessor()
+        pushed_frames = []
+        processor.push_frame = AsyncMock(
+            side_effect=lambda f, *args, **kwargs: pushed_frames.append(f)
+        )
+
+        await processor._push_turn_text(
+            f"{'x' * 63}{USER_TURN_COMPLETE_MARKER} Hello after the marker"
+        )
+
+        text_frames = [f for f in pushed_frames if isinstance(f, LLMTextFrame)]
+        self.assertEqual([f.text for f in text_frames], ["Hello after the marker"])
+        self.assertEqual(processor._turn_marker, TurnMarker.COMPLETE)
+
     async def test_turn_state_reset_after_llm_full_response_end_frame(self):
         """Test that the turn marker is reset when LLMFullResponseEndFrame is pushed."""
         processor = MockProcessor()
