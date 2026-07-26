@@ -107,10 +107,10 @@ class TestVADController(unittest.IsolatedAsyncioTestCase):
                         speech_activity_period=speech_activity_period,
                     )
 
-    async def test_large_speech_activity_period_emits_first_activity(self):
-        """Test that a large integer period emits activity on the first SPEAKING input."""
+    async def test_large_speech_activity_period_handles_repeated_speaking(self):
+        """Test that a large integer period emits only the first SPEAKING activity."""
         analyzer = MockVADAnalyzer()
-        controller = VADController(analyzer, speech_activity_period=10**400)
+        controller = VADController(analyzer, speech_activity_period=1 << 100000)
         activity_count = 0
 
         @controller.event_handler("on_speech_activity")
@@ -122,9 +122,9 @@ class TestVADController(unittest.IsolatedAsyncioTestCase):
             StartFrame(audio_in_sample_rate=16000, audio_out_sample_rate=16000)
         )
         analyzer.set_next_state(VADState.SPEAKING)
-        await controller.process_frame(
-            InputAudioRawFrame(audio=b"\x00" * 1024, sample_rate=16000, num_channels=1)
-        )
+        audio_frame = InputAudioRawFrame(audio=b"\x00" * 1024, sample_rate=16000, num_channels=1)
+        await controller.process_frame(audio_frame)
+        await controller.process_frame(audio_frame)
 
         self.assertEqual(activity_count, 1)
 

@@ -102,21 +102,22 @@ class TestVADProcessor(unittest.IsolatedAsyncioTestCase):
             ],
         )
 
-    async def test_pushes_first_user_speaking_frame_with_large_period(self):
-        """Test that a large integer period pushes activity on the first SPEAKING input."""
+    async def test_pushes_one_user_speaking_frame_with_large_period(self):
+        """Test that a large integer period pushes only the first SPEAKING activity."""
         processor = VADProcessor(
-            vad_analyzer=MockVADAnalyzer([VADState.SPEAKING]),
-            speech_activity_period=10**400,
+            vad_analyzer=MockVADAnalyzer([VADState.SPEAKING, VADState.SPEAKING]),
+            speech_activity_period=1 << 100000,
         )
 
         await run_test(
             processor,
-            frames_to_send=[self._make_audio_frame()],
+            frames_to_send=[self._make_audio_frame(), self._make_audio_frame()],
             expected_down_frames=[
                 SpeechControlParamsFrame,
                 InputAudioRawFrame,
                 VADUserStartedSpeakingFrame,
                 UserSpeakingFrame,
+                InputAudioRawFrame,
             ],
         )
 
