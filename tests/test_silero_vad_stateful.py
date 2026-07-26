@@ -7,7 +7,6 @@
 """Stateful behavioral tests for the Silero ONNX VAD boundary."""
 
 import gc
-import time
 import unittest
 import weakref
 from typing import Any
@@ -47,8 +46,8 @@ class TestSileroVADStatefulBehavior(unittest.TestCase):
     def _new_analyzer(sample_rate: int) -> SileroVADAnalyzer:
         analyzer = SileroVADAnalyzer()
         analyzer.set_sample_rate(sample_rate)
-        # Keep the periodic cleanup branch outside these short deterministic sequences.
-        analyzer._last_reset_time = time.time()
+        # Keep the time-based reset branch outside deterministic conversion sequences.
+        analyzer._last_reset_time = float("inf")
         return analyzer
 
     @staticmethod

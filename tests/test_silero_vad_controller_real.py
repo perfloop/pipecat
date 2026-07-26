@@ -6,7 +6,6 @@
 
 """Integration coverage for the real Silero VAD controller path."""
 
-import time
 import unittest
 from typing import Any
 
@@ -49,7 +48,7 @@ class TestSileroVADControllerRealPath(unittest.IsolatedAsyncioTestCase):
                             audio_out_sample_rate=sample_rate,
                         )
                     )
-                    analyzer._last_reset_time = time.time()
+                    analyzer._last_reset_time = float("inf")
 
                     for audio in _audio_buffers(frame_count):
                         await controller.process_frame(
