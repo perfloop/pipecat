@@ -8,13 +8,11 @@
 """Emit one real Silero voice_confidence measurement as proof JSONL."""
 
 import argparse
-import gc
 import json
 import math
 import statistics
 import threading
 import time
-import tracemalloc
 from pathlib import Path
 
 import numpy as np
@@ -25,7 +23,7 @@ _WARMUP_CALLS = 32
 _TIMED_CALLS = 1024
 _TIMING_TRIALS = 17
 _ALLOCATION_CALLS = 16
-_METRICS = ("ns/frame", "allocs/op", "tracemalloc_peak_bytes/op")
+_METRICS = ("ns/op", "allocs/op", "B/op")
 
 
 def _frame_size(sample_rate: int) -> int:
@@ -79,10 +77,8 @@ def _new_warm_analyzer(sample_rate: int, frames: list[bytes]) -> SileroVADAnalyz
     return analyzer
 
 
-def _measure_ns_per_frame(
-    analyzer: SileroVADAnalyzer, sample_rate: int, frames: list[bytes]
-) -> float:
-    """Return the median of independent stateful timing trials."""
+def _measure_ns_per_op(analyzer: SileroVADAnalyzer, sample_rate: int, frames: list[bytes]) -> float:
+    """Return median nanoseconds for one complete-frame voice_confidence call."""
     samples: list[float] = []
     sink = 0.0
     for trial in range(_TIMING_TRIALS):
@@ -97,10 +93,10 @@ def _measure_ns_per_frame(
     return statistics.median(samples)
 
 
-def _measure_float32_allocs_per_op(
+def _measure_allocation_profile(
     analyzer: SileroVADAnalyzer, sample_rate: int, frames: list[bytes]
-) -> float:
-    """Count full-frame float32 allocations attributed to voice_confidence."""
+) -> tuple[float, float]:
+    """Profile owner-attributed float32 allocations and total allocated bytes."""
     if threading.active_count() != 1:
         raise RuntimeError("allocation sampling requires one Python thread")
 
@@ -116,14 +112,14 @@ def _measure_float32_allocs_per_op(
                 sink += _confidence(analyzer, frames[index % len(frames)])
 
         allocations = 0
+        allocated_bytes = 0
         for record in memray.FileReader(trace_path).get_allocation_records():
-            if record.size != float32_bytes:
-                continue
             try:
                 stack = record.stack_trace()
             except NotImplementedError:
                 continue
-            if any(
+            allocated_bytes += record.size * record.n_allocations
+            if record.size == float32_bytes and any(
                 function == "voice_confidence"
                 and filename.endswith("src/pipecat/audio/vad/silero.py")
                 for function, filename, _line in stack
@@ -135,35 +131,7 @@ def _measure_float32_allocs_per_op(
     if not math.isfinite(sink):
         raise RuntimeError("Silero VAD allocation result was not consumed")
     _assert_model_state(analyzer, sample_rate)
-    return allocations / _ALLOCATION_CALLS
-
-
-def _measure_transient_peak_bytes(
-    analyzer: SileroVADAnalyzer, sample_rate: int, frames: list[bytes]
-) -> int:
-    """Measure the maximum per-call tracemalloc peak after stateful warmup."""
-    if threading.active_count() != 1:
-        raise RuntimeError("tracemalloc allocation sampling requires one Python thread")
-
-    gc.collect()
-    tracemalloc.stop()
-    tracemalloc.start()
-    peaks: list[int] = []
-    sink = 0.0
-    try:
-        for index in range(_ALLOCATION_CALLS):
-            before_current, _ = tracemalloc.get_traced_memory()
-            tracemalloc.reset_peak()
-            sink += _confidence(analyzer, frames[index % len(frames)])
-            _, peak = tracemalloc.get_traced_memory()
-            peaks.append(max(0, peak - before_current))
-    finally:
-        tracemalloc.stop()
-
-    if not math.isfinite(sink):
-        raise RuntimeError("Silero VAD allocation result was not consumed")
-    _assert_model_state(analyzer, sample_rate)
-    return max(peaks)
+    return allocations / _ALLOCATION_CALLS, allocated_bytes / _ALLOCATION_CALLS
 
 
 def _parse_args() -> argparse.Namespace:
@@ -178,12 +146,13 @@ def main() -> int:
     frames = _frames(args.sample_rate)
     analyzer = _new_warm_analyzer(args.sample_rate, frames)
 
-    if args.metric == "ns/frame":
-        value = _measure_ns_per_frame(analyzer, args.sample_rate, frames)
-    elif args.metric == "allocs/op":
-        value = _measure_float32_allocs_per_op(analyzer, args.sample_rate, frames)
+    if args.metric == "ns/op":
+        value = _measure_ns_per_op(analyzer, args.sample_rate, frames)
     else:
-        value = _measure_transient_peak_bytes(analyzer, args.sample_rate, frames)
+        allocs_per_op, bytes_per_op = _measure_allocation_profile(
+            analyzer, args.sample_rate, frames
+        )
+        value = allocs_per_op if args.metric == "allocs/op" else bytes_per_op
 
     print(json.dumps({"metric": args.metric, "value": value}, separators=(",", ":")))
     return 0
