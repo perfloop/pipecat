@@ -24,7 +24,7 @@ _WARMUP_CALLS = 32
 _TIMED_CALLS = 1024
 _TIMING_TRIALS = 17
 _ALLOCATION_CALLS = 16
-_METRICS = ("ns/frame", "tracemalloc_peak_bytes/frame")
+_METRICS = ("ns/frame", "tracemalloc_peak_bytes/op")
 
 
 def _frame_size(sample_rate: int) -> int:
