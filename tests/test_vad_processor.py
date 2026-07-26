@@ -44,6 +44,16 @@ class TestVADProcessor(unittest.IsolatedAsyncioTestCase):
     def _make_audio_frame(self):
         return InputAudioRawFrame(audio=b"\x00" * 1024, sample_rate=16000, num_channels=1)
 
+    def test_rejects_invalid_speech_activity_period(self):
+        """Test that invalid activity periods fail during processor construction."""
+        for speech_activity_period in ("0.2", float("nan")):
+            with self.subTest(speech_activity_period=speech_activity_period):
+                with self.assertRaisesRegex(ValueError, "finite real number"):
+                    VADProcessor(
+                        vad_analyzer=MockVADAnalyzer([VADState.SPEAKING]),
+                        speech_activity_period=speech_activity_period,
+                    )
+
     async def test_forwards_audio_frames(self):
         """Test that audio frames are forwarded downstream."""
         analyzer = MockVADAnalyzer([VADState.QUIET])

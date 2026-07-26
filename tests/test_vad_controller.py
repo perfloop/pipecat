@@ -97,6 +97,16 @@ class TestVADController(unittest.IsolatedAsyncioTestCase):
         await controller.process_frame(audio_frame)
         self.assertTrue(speech_stopped)
 
+    def test_rejects_invalid_speech_activity_period(self):
+        """Test that invalid activity periods fail during controller construction."""
+        for speech_activity_period in ("0.2", float("nan")):
+            with self.subTest(speech_activity_period=speech_activity_period):
+                with self.assertRaisesRegex(ValueError, "finite real number"):
+                    VADController(
+                        MockVADAnalyzer(),
+                        speech_activity_period=speech_activity_period,
+                    )
+
     async def test_speech_activity_event(self):
         """Test that on_speech_activity uses elapsed rather than wall-clock time."""
         analyzer = MockVADAnalyzer()

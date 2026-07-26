@@ -11,7 +11,9 @@ and emit events when speech starts, stops, or is actively detected.
 """
 
 import asyncio
+import math
 import time
+from numbers import Real
 
 from loguru import logger
 
@@ -84,7 +86,17 @@ class VADController(BaseObject):
                 when no audio frames are received while in SPEAKING state.
                 This handles cases like mic mute mid-speech.
                 Set to 0 to disable. Defaults to 1.0.
+
+        Raises:
+            ValueError: If speech_activity_period is not a finite real number.
         """
+        if (
+            isinstance(speech_activity_period, bool)
+            or not isinstance(speech_activity_period, Real)
+            or not math.isfinite(speech_activity_period)
+        ):
+            raise ValueError("speech_activity_period must be a finite real number")
+
         super().__init__()
         self._vad_analyzer = vad_analyzer
         self._vad_state: VADState = VADState.QUIET
