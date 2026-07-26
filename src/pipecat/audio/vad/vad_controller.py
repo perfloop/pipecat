@@ -12,7 +12,6 @@ and emit events when speech starts, stops, or is actively detected.
 
 import asyncio
 import time
-from time import monotonic
 
 from loguru import logger
 
@@ -175,7 +174,10 @@ class VADController(BaseObject):
         self._vad_state = await self._handle_vad(frame.audio, self._vad_state)
 
         if self._vad_state == VADState.SPEAKING:
-            await self._maybe_speech_activity()
+            if self._speech_activity_period <= 0:
+                await self._call_event_handler("on_speech_activity")
+            else:
+                await self._maybe_speech_activity()
 
     async def _handle_vad(self, audio: bytes, vad_state: VADState) -> VADState:
         """Handle Voice Activity Detection results and trigger appropriate events."""
@@ -218,7 +220,7 @@ class VADController(BaseObject):
 
     async def _maybe_speech_activity(self):
         """Emit speech activity when the configured period has elapsed."""
-        current_time = monotonic()
+        current_time = time.monotonic()
         if (
             self._speech_activity_time is None
             or current_time - self._speech_activity_time >= self._speech_activity_period

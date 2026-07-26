@@ -117,8 +117,8 @@ class TestVADController(unittest.IsolatedAsyncioTestCase):
         analyzer.set_next_state(VADState.SPEAKING)
         with (
             patch(
-                "pipecat.audio.vad.vad_controller.monotonic",
-                side_effect=[0.01, 0.11, 0.22],
+                "pipecat.audio.vad.vad_controller.time.monotonic",
+                side_effect=[0.01, 0.01, 0.11, 0.11, 0.22, 0.22],
             ),
             patch(
                 "pipecat.audio.vad.vad_controller.time.time",
