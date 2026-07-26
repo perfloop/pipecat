@@ -22,9 +22,9 @@ from pipecat.audio.vad.silero import SileroVADAnalyzer
 
 _WARMUP_CALLS = 32
 _TIMED_CALLS = 1024
-_TIMING_TRIALS = 7
+_TIMING_TRIALS = 17
 _ALLOCATION_CALLS = 16
-_METRICS = ("ns/frame", "tracemalloc_peak_bytes/frame", "retained_input_bytes")
+_METRICS = ("ns/frame", "tracemalloc_peak_bytes/frame")
 
 
 def _frame_size(sample_rate: int) -> int:
@@ -124,12 +124,6 @@ def _measure_transient_peak_bytes(
     return max(peaks)
 
 
-def _retained_input_bytes(analyzer: SileroVADAnalyzer) -> int:
-    """Report the analyzer-owned float32 input storage, if the implementation owns it."""
-    reusable = getattr(analyzer, "_audio_float32", None)
-    return int(reusable.nbytes) if isinstance(reusable, np.ndarray) else 0
-
-
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--sample-rate", type=int, choices=(8000, 16000), required=True)
@@ -144,10 +138,8 @@ def main() -> int:
 
     if args.metric == "ns/frame":
         value = _measure_ns_per_frame(analyzer, args.sample_rate, frames)
-    elif args.metric == "tracemalloc_peak_bytes/frame":
-        value = _measure_transient_peak_bytes(analyzer, args.sample_rate, frames)
     else:
-        value = _retained_input_bytes(analyzer)
+        value = _measure_transient_peak_bytes(analyzer, args.sample_rate, frames)
 
     print(json.dumps({"metric": args.metric, "value": value}, separators=(",", ":")))
     return 0
