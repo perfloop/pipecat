@@ -8,6 +8,7 @@
 
 import asyncio
 import math
+import random
 from typing import Any
 
 import numpy as np
@@ -68,32 +69,52 @@ def _assert_inference_state(analyzer: SileroVADAnalyzer, sample_rate: int) -> No
         raise RuntimeError("Silero recurrent context became non-finite")
 
 
-def _benchmark_voice_confidence(benchmark: Any, sample_rate: int) -> None:
-    """Benchmark steady real analyzer calls at one supported VAD shape."""
-    analyzer = _new_analyzer(sample_rate)
-    frames = _audio_buffers(analyzer.num_frames_required())
+def _participant_rates(dominant_sample_rate: int) -> list[int]:
+    """Create a heterogeneous two-rate participant mix for one native sample."""
+    other_sample_rate = 16000 if dominant_sample_rate == 8000 else 8000
+    chooser = random.SystemRandom()
+    return [
+        dominant_sample_rate,
+        other_sample_rate,
+        *chooser.choices([dominant_sample_rate, other_sample_rate], weights=[3, 1], k=29),
+    ]
+
+
+def _benchmark_mixed_rates(benchmark: Any, dominant_sample_rate: int) -> None:
+    """Benchmark real owner calls across a changing multi-participant rate mix."""
+    analyzers = {sample_rate: _new_analyzer(sample_rate) for sample_rate in (8000, 16000)}
+    frames_by_rate = {
+        sample_rate: _audio_buffers(analyzer.num_frames_required())
+        for sample_rate, analyzer in analyzers.items()
+    }
+    participant_rates = _participant_rates(dominant_sample_rate)
+    frame_indices = {8000: 0, 16000: 0}
     frame_index = 0
 
     def operation() -> float:
         nonlocal frame_index
-        confidence = _confidence(analyzer.voice_confidence(frames[frame_index % len(frames)]))
+        sample_rate = participant_rates[frame_index % len(participant_rates)]
+        frames = frames_by_rate[sample_rate]
+        frame = frames[frame_indices[sample_rate] % len(frames)]
+        frame_indices[sample_rate] += 1
         frame_index += 1
-        return confidence
+        return _confidence(analyzers[sample_rate].voice_confidence(frame))
 
     confidence = benchmark(operation)
     if not math.isfinite(confidence):
         raise RuntimeError("pytest-benchmark did not retain the confidence result")
-    _assert_inference_state(analyzer, sample_rate)
+    for sample_rate, analyzer in analyzers.items():
+        _assert_inference_state(analyzer, sample_rate)
 
 
-def test_silero_voice_confidence_8khz_256(benchmark: Any) -> None:
-    """Benchmark direct real-owner calls for complete 8 kHz VAD frames."""
-    _benchmark_voice_confidence(benchmark, 8000)
+def test_silero_voice_confidence_8khz_dominant(benchmark: Any) -> None:
+    """Benchmark real owner calls for an 8 kHz-dominant participant mix."""
+    _benchmark_mixed_rates(benchmark, 8000)
 
 
-def test_silero_voice_confidence_16khz_512(benchmark: Any) -> None:
-    """Benchmark direct real-owner calls for complete 16 kHz VAD frames."""
-    _benchmark_voice_confidence(benchmark, 16000)
+def test_silero_voice_confidence_16khz_dominant(benchmark: Any) -> None:
+    """Benchmark real owner calls for a 16 kHz-dominant participant mix."""
+    _benchmark_mixed_rates(benchmark, 16000)
 
 
 def test_vad_controller_process_frame_16khz_512(benchmark: Any) -> None:
