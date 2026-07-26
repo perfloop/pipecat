@@ -145,6 +145,29 @@ class TestUserUserTurnCompletionLLMServiceMixin(unittest.IsolatedAsyncioTestCase
         marker_frames = [f for f in pushed_frames if isinstance(f, LLMMarkerFrame)]
         self.assertEqual(len(marker_frames), 1)
 
+    async def test_markerless_response_preserves_text_when_reset(self):
+        """A markerless response is delivered exactly once when its response ends.
+
+        A non-compliant response may be buffered or may switch to graceful
+        pass-through after a bounded prefix, but neither route may lose or
+        duplicate the text before the response state is reset.
+        """
+        processor = MockProcessor()
+        pushed_frames = []
+        processor.push_frame = AsyncMock(
+            side_effect=lambda f, *args, **kwargs: pushed_frames.append(f)
+        )
+        original_text = "x" * 256
+
+        for offset in range(0, len(original_text), 16):
+            await processor._push_turn_text(original_text[offset : offset + 16])
+        await processor._turn_reset()
+
+        text_frames = [f for f in pushed_frames if isinstance(f, LLMTextFrame)]
+        self.assertEqual("".join(frame.text for frame in text_frames), original_text)
+        self.assertEqual(processor._turn_text_buffer, "")
+        self.assertIsNone(processor._turn_marker)
+
     async def test_turn_state_reset_after_llm_full_response_end_frame(self):
         """Test that the turn marker is reset when LLMFullResponseEndFrame is pushed."""
         processor = MockProcessor()
