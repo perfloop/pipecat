@@ -39,17 +39,13 @@ USER_TURN_COMPLETE_MARKER = "✓"
 USER_TURN_INCOMPLETE_SHORT_MARKER = "○"  # Short wait - user likely continues soon
 USER_TURN_INCOMPLETE_LONG_MARKER = "◐"  # Long wait - user needs more time
 
-# Turn completion instructions require the marker to be the response's first character.
-# Keep a small compatibility prefix for non-conforming responses before forwarding text.
-_TURN_MARKER_SEARCH_LIMIT = 64
-
 
 class TurnMarker(Enum):
     """Completion verdict detected in the current LLM response.
 
     - ``COMPLETE``:    ✓ detected, response flows through as speech.
     - ``INCOMPLETE``:  ○/◐ detected, response suppressed, timeout armed.
-    - ``PASSTHROUGH``: no marker in the bounded prefix, response flows unchanged.
+    - ``PASSTHROUGH``: response does not begin with a marker and flows unchanged.
     """
 
     COMPLETE = "complete"
@@ -183,8 +179,9 @@ class UserTurnCompletionConfig:
     """Configuration for turn completion behavior.
 
     Parameters:
-        instructions: Custom instructions for turn completion. If not provided,
-            uses default USER_TURN_COMPLETION_INSTRUCTIONS.
+        instructions: Custom instructions for turn completion. Custom
+            instructions retain legacy marker-at-any-position parsing; if not
+            provided, uses default USER_TURN_COMPLETION_INSTRUCTIONS.
         incomplete_short_timeout: Seconds to wait after short incomplete (○) before prompting.
         incomplete_long_timeout: Seconds to wait after long incomplete (◐) before prompting.
         incomplete_short_prompt: Custom prompt when short timeout expires.
@@ -224,7 +221,11 @@ class UserTurnCompletionLLMServiceMixin(FrameProcessor):
     - ◐ (INCOMPLETE LONG): Suppress response, wait 10s, then prompt
 
     When incomplete timeouts expire, the mixin automatically prompts the LLM
-    with a contextual follow-up message to re-engage the user.
+    with a contextual follow-up message to re-engage the user. Default
+    instructions require the marker to be the first character of the first
+    non-empty response fragment; otherwise the response flows through without
+    turn-completion filtering. A custom instruction string retains legacy
+    marker-at-any-position parsing for compatibility.
 
     Usage example::
 
@@ -249,12 +250,14 @@ class UserTurnCompletionLLMServiceMixin(FrameProcessor):
             **kwargs: Keyword arguments passed to parent class.
         """
         super().__init__(*args, **kwargs)
+        # Custom instructions retain legacy marker-at-any-position parsing and
+        # buffer text until a marker or response end. Default instructions do
+        # not use this buffer because their marker must be first.
         self._turn_text_buffer = ""
-        # Completion verdict for the current LLM response, set when a marker is
-        # detected in the text stream. ``None`` means no marker yet, so buffer
-        # only the bounded marker-search prefix. ``INCOMPLETE`` also doubles as
-        # a safety latch: the prompt tells the LLM to emit only the marker, but
-        # if it disobeys and streams more text we keep suppressing it.
+        # Completion verdict for the current LLM response. ``None`` means no
+        # marker verdict yet. ``INCOMPLETE`` also doubles as a safety latch:
+        # the prompt tells the LLM to emit only the marker, but if it disobeys
+        # and streams more text we keep suppressing it.
         self._turn_marker: TurnMarker | None = None
         # True once ``UserTurnInferenceCompletedFrame`` has been broadcast
         # for this turn. Prevents double-broadcast when ✓ and a tool call
@@ -367,25 +370,28 @@ class UserTurnCompletionLLMServiceMixin(FrameProcessor):
     async def _turn_reset(self):
         """Reset turn completion state between responses.
 
-        Call this at the end of each LLM response to clear buffered text and reset state.
-        If no marker was found before passthrough, pushes any remaining buffered text to avoid
-        losing content.
+        Call this at the end of each LLM response to reset state. A custom
+        instruction response without a marker is forwarded at response end;
+        a default-instruction response was already forwarded unchanged.
 
         Note: This does NOT cancel pending incomplete timeouts. Timeouts are
         cancelled on InterruptionFrame (when the user speaks) and on
         LLMFullResponseStartFrame (when a new inference begins).
         """
-        # If no marker was found and text remains buffered in this response,
-        # push it so it is not lost. Passthrough responses already forwarded
-        # their prefix and leave the buffer empty.
         if self._turn_marker is None and self._turn_text_buffer:
-            # Graceful degradation: push the buffered text so it's not lost
             logger.warning(
                 f"{self}: filter_incomplete_user_turns is enabled but LLM response did not "
                 f"contain turn completion markers (✓/○/◐). Pushing text anyway. "
                 "The system prompt may be missing turn completion instructions."
             )
             await self.push_frame(LLMTextFrame(self._turn_text_buffer))
+        elif self._turn_marker == TurnMarker.PASSTHROUGH:
+            logger.warning(
+                f"{self}: filter_incomplete_user_turns is enabled but LLM response did not "
+                f"begin with a turn completion marker (✓/○/◐). Text was forwarded without "
+                "turn completion filtering. The system prompt may be missing turn completion "
+                "instructions."
+            )
 
         self._turn_text_buffer = ""
         self._turn_marker = None
@@ -466,8 +472,9 @@ class UserTurnCompletionLLMServiceMixin(FrameProcessor):
         2. When ○ (SHORT) is found: suppress text, start short timeout
         3. When ◐ (LONG) is found: suppress text, start long timeout
         4. When ✓ (COMPLETE) is found: push all text with marker marked as skip_tts
-        5. After a marker is detected or the marker prefix is exhausted: all
-           subsequent text flows through immediately
+        5. With default instructions, a first non-empty fragment without a
+           marker flows through immediately; custom instructions retain legacy
+           marker-at-any-position parsing
 
         Args:
             text: The text content from the LLM to push.
@@ -486,70 +493,63 @@ class UserTurnCompletionLLMServiceMixin(FrameProcessor):
         if self._turn_marker == TurnMarker.INCOMPLETE:
             return
 
-        # If ✓ (COMPLETE) was already found, push text immediately without buffering
-        if self._turn_marker == TurnMarker.COMPLETE:
+        # Once a response has a verdict, all later text needs no parsing.
+        if self._turn_marker in (TurnMarker.COMPLETE, TurnMarker.PASSTHROUGH):
             await self.push_frame(LLMTextFrame(text))
             return
 
-        # A response without a marker in its initial prefix is non-conforming.
-        # It has already been forwarded, so avoid repeatedly buffering and scanning it.
-        if self._turn_marker == TurnMarker.PASSTHROUGH:
-            await self.push_frame(LLMTextFrame(text))
-            return
+        # Default instructions require the marker to be first, so classify
+        # only the first character and never buffer a markerless response.
+        # A non-empty custom instruction string retains the previous protocol:
+        # it may place a marker later in the response, so preserve its buffer.
+        uses_custom_instructions = bool(self._turn_text_buffer) or bool(
+            self._user_turn_completion_config.instructions
+        )
+        if uses_custom_instructions:
+            self._turn_text_buffer += text
+            marker_text = self._turn_text_buffer
+        else:
+            # Empty provider fragments do not make a decision, so wait for
+            # non-empty text.
+            if not text:
+                return
+            marker_text = text[0]
 
-        # Only the documented marker prefix participates in classification.
-        # Keeping overflow separate makes the response verdict independent of
-        # how a provider partitions the same text into streaming chunks.
-        prefix_remaining = _TURN_MARKER_SEARCH_LIMIT - len(self._turn_text_buffer)
-        prefix_text = text[:prefix_remaining]
-        overflow_text = text[prefix_remaining:]
-        self._turn_text_buffer += prefix_text
-
-        # Check for incomplete markers (○ short, ◐ long)
-        # These indicate the user was cut off or needs time - we suppress the bot's
+        # ○ and ◐ indicate the user was cut off or needs time. Suppress the
         # response and start a timeout to re-prompt later.
         incomplete_type: IncompleteType | None = None
-        if USER_TURN_INCOMPLETE_SHORT_MARKER in self._turn_text_buffer:
+        marker: str | None = None
+        if USER_TURN_INCOMPLETE_SHORT_MARKER in marker_text:
             incomplete_type = IncompleteType.SHORT
-        elif USER_TURN_INCOMPLETE_LONG_MARKER in self._turn_text_buffer:
+            marker = USER_TURN_INCOMPLETE_SHORT_MARKER
+        elif USER_TURN_INCOMPLETE_LONG_MARKER in marker_text:
             incomplete_type = IncompleteType.LONG
+            marker = USER_TURN_INCOMPLETE_LONG_MARKER
 
         if incomplete_type:
-            marker = (
-                USER_TURN_INCOMPLETE_SHORT_MARKER
-                if incomplete_type == IncompleteType.SHORT
-                else USER_TURN_INCOMPLETE_LONG_MARKER
-            )
+            assert marker is not None
             logger.debug(
                 f"INCOMPLETE {incomplete_type.value.upper()} ({marker}) detected, suppressing text"
             )
             self._turn_marker = TurnMarker.INCOMPLETE
 
             # No UserTurnInferenceCompletedFrame is broadcast here: the turn is
-            # explicitly not complete. The re-prompt path is driven by
-            # this mixin's own timeout.
-
-            # Persist the marker to context as a stand-alone assistant
-            # message via LLMMarkerFrame: the bot produces no spoken
-            # output for incomplete turns, so the marker is the entire
-            # context entry.
+            # explicitly not complete. The re-prompt path is driven by this
+            # mixin's own timeout.
             await self.push_frame(LLMMarkerFrame(marker))
-
             self._turn_text_buffer = ""
             await self._start_incomplete_timeout(incomplete_type)
             return
 
-        # Check for ✓ (COMPLETE) marker - user's turn was complete, respond normally
-        if USER_TURN_COMPLETE_MARKER in self._turn_text_buffer:
-            logger.debug(f"COMPLETE ({USER_TURN_COMPLETE_MARKER}) detected, pushing buffered text")
+        # ✓ indicates the user's turn was complete, so the rest of this
+        # fragment and every later fragment flow as normal speech.
+        if USER_TURN_COMPLETE_MARKER in marker_text:
+            logger.debug(f"COMPLETE ({USER_TURN_COMPLETE_MARKER}) detected, pushing response")
 
             # Latch: this user turn now has its one spoken completion. Later
             # duplicate inferences within the same turn are dropped by the guard
             # at the top of this method.
             self._user_turn_completion_voiced = True
-
-            # Any pending incomplete timeout was already cancelled when this
-            # response's LLMFullResponseStartFrame arrived (see ``push_frame``).
 
             # Broadcast that the user turn is complete so a stop strategy
             # gating finalization on this signal (e.g.
@@ -567,39 +567,27 @@ class UserTurnCompletionLLMServiceMixin(FrameProcessor):
                 LLMMarkerFrame(USER_TURN_COMPLETE_MARKER, append_to_context_immediately=False)
             )
 
-            # Split buffer at the marker to handle cases where marker and text
-            # arrive in the same chunk (e.g., "✓ Hello!" from some LLMs)
-            marker_pos = self._turn_text_buffer.index(USER_TURN_COMPLETE_MARKER)
-            marker_end = marker_pos + len(USER_TURN_COMPLETE_MARKER)
+            if uses_custom_instructions:
+                marker_pos = self._turn_text_buffer.index(USER_TURN_COMPLETE_MARKER)
+                remaining_text = self._turn_text_buffer[marker_pos + 1 :]
+                self._turn_text_buffer = ""
+            else:
+                remaining_text = text[1:]
 
-            # Push remaining text after marker as normal speech. Overflow did
-            # not participate in classification, but it is still response text.
-            remaining_text = self._turn_text_buffer[marker_end:] + overflow_text
+            # Strip a single separator after the marker (✓ Hello -> Hello).
+            if remaining_text.startswith(" "):
+                remaining_text = remaining_text[1:]
             if remaining_text:
-                # Strip leading space after marker if present (✓ Hello -> Hello)
-                if remaining_text.startswith(" "):
-                    remaining_text = remaining_text[1:]
-                if remaining_text:
-                    await self.push_frame(LLMTextFrame(remaining_text))
+                await self.push_frame(LLMTextFrame(remaining_text))
 
-            # Mark complete - all subsequent text flows through immediately
-            self._turn_text_buffer = ""
             self._turn_marker = TurnMarker.COMPLETE
             return
 
-        # The documented protocol puts a marker first. Preserve a small prefix
-        # for compatibility, then gracefully degrade so a malformed response
-        # resumes downstream streaming instead of growing an unbounded buffer.
-        if len(self._turn_text_buffer) >= _TURN_MARKER_SEARCH_LIMIT:
-            logger.warning(
-                f"{self}: filter_incomplete_user_turns is enabled but LLM response did not "
-                f"contain a turn completion marker (✓/○/◐) in its first "
-                f"{_TURN_MARKER_SEARCH_LIMIT} characters. Pushing text without turn completion "
-                "filtering. The system prompt may be missing turn completion instructions."
-            )
-            buffered_text = self._turn_text_buffer
-            self._turn_text_buffer = ""
-            self._turn_marker = TurnMarker.PASSTHROUGH
-            await self.push_frame(LLMTextFrame(buffered_text))
-            if overflow_text:
-                await self.push_frame(LLMTextFrame(overflow_text))
+        if uses_custom_instructions:
+            return
+
+        # A malformed default response cannot acquire a valid marker later:
+        # forwarding immediately preserves downstream streaming and avoids
+        # buffering it.
+        self._turn_marker = TurnMarker.PASSTHROUGH
+        await self.push_frame(LLMTextFrame(text))

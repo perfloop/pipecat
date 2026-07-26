@@ -119,34 +119,26 @@ class TestUserUserTurnCompletionLLMServiceMixin(unittest.IsolatedAsyncioTestCase
         completed = [f for f in pushed_frames if isinstance(f, UserTurnInferenceCompletedFrame)]
         self.assertEqual(len(completed), 0)
 
-    async def test_text_buffered_until_marker_found(self):
-        """Test that text is buffered until a marker is detected."""
+    async def test_empty_text_waits_for_first_character_marker(self):
+        """Empty provider fragments do not prevent a later first-character marker."""
         processor = MockProcessor()
-
         pushed_frames = []
         processor.push_frame = AsyncMock(
             side_effect=lambda f, *args, **kwargs: pushed_frames.append(f)
         )
 
-        # Simulate token-by-token streaming without marker
-        await processor._push_turn_text("Hello")
-        await processor._push_turn_text(" there")
+        await processor._push_turn_text("")
+        await processor._push_turn_text("")
+        self.assertEqual(pushed_frames, [])
+        self.assertIsNone(processor._turn_marker)
 
-        # No frames should be pushed yet (buffering)
-        self.assertEqual(len(pushed_frames), 0)
-
-        # Now send the complete marker
-        await processor._push_turn_text(f" {USER_TURN_COMPLETE_MARKER} How are you?")
-
-        # One LLMTextFrame for the spoken portion; one LLMMarkerFrame for
-        # the marker; UserTurnInferenceCompletedFrame broadcast in both directions.
+        await processor._push_turn_text(f"{USER_TURN_COMPLETE_MARKER} Hello there!")
         text_frames = [f for f in pushed_frames if isinstance(f, LLMTextFrame)]
-        self.assertEqual(len(text_frames), 1)
-        marker_frames = [f for f in pushed_frames if isinstance(f, LLMMarkerFrame)]
-        self.assertEqual(len(marker_frames), 1)
+        self.assertEqual([f.text for f in text_frames], ["Hello there!"])
+        self.assertEqual(processor._turn_marker, TurnMarker.COMPLETE)
 
-    async def test_short_markerless_text_flushes_at_response_end(self):
-        """A short markerless response keeps the existing end-of-response fallback."""
+    async def test_markerless_text_streams_immediately(self):
+        """A response without an initial marker falls back on its first text fragment."""
         processor = MockProcessor()
         pushed_frames = []
         processor.push_frame = AsyncMock(
@@ -155,91 +147,38 @@ class TestUserUserTurnCompletionLLMServiceMixin(unittest.IsolatedAsyncioTestCase
 
         markerless_text = "A short markerless response"
         await processor._push_turn_text(markerless_text)
-        self.assertEqual([f for f in pushed_frames if isinstance(f, LLMTextFrame)], [])
-
-        await processor._turn_reset()
-        text_frames = [f for f in pushed_frames if isinstance(f, LLMTextFrame)]
-        self.assertEqual([f.text for f in text_frames], [markerless_text])
-        self.assertIsNone(processor._turn_marker)
-
-    async def test_marker_prefix_limit_is_independent_of_stream_chunking(self):
-        """The same markerless-prefix response has one verdict for any chunking."""
-
-        async def process_chunks(chunks):
-            processor = MockProcessor()
-            pushed_frames = []
-            processor.push_frame = AsyncMock(
-                side_effect=lambda f, *args, **kwargs: pushed_frames.append(f)
-            )
-            processor._start_incomplete_timeout = AsyncMock()
-            for chunk in chunks:
-                await processor._push_turn_text(chunk)
-            return processor, pushed_frames
-
-        prefix = "x" * 64
-        marker = USER_TURN_INCOMPLETE_SHORT_MARKER
-        one_chunk_processor, one_chunk_frames = await process_chunks([prefix + marker])
-        split_processor, split_frames = await process_chunks([prefix, marker])
-
-        def frame_summary(frames):
-            return [(type(frame), getattr(frame, "text", None)) for frame in frames]
-
-        expected_frames = [(LLMTextFrame, prefix), (LLMTextFrame, marker)]
-        self.assertEqual(frame_summary(one_chunk_frames), expected_frames)
-        self.assertEqual(frame_summary(split_frames), expected_frames)
-
-        for processor, pushed_frames in (
-            (one_chunk_processor, one_chunk_frames),
-            (split_processor, split_frames),
-        ):
-            text_frames = [f for f in pushed_frames if isinstance(f, LLMTextFrame)]
-            self.assertEqual([f.text for f in text_frames], [prefix, marker])
-            self.assertEqual([f for f in pushed_frames if isinstance(f, LLMMarkerFrame)], [])
-            self.assertEqual(processor._turn_marker, TurnMarker.PASSTHROUGH)
-            self.assertEqual(processor._turn_text_buffer, "")
-            processor._start_incomplete_timeout.assert_not_awaited()
-
-    async def test_markerless_text_streams_after_marker_prefix_limit(self):
-        """A markerless response forwards once its bounded search prefix is exhausted."""
-        processor = MockProcessor()
-        pushed_frames = []
-        processor.push_frame = AsyncMock(
-            side_effect=lambda f, *args, **kwargs: pushed_frames.append(f)
-        )
-
-        markerless_prefix = "x" * 64
-        await processor._push_turn_text(markerless_prefix)
-
-        text_frames = [f for f in pushed_frames if isinstance(f, LLMTextFrame)]
-        self.assertEqual([f.text for f in text_frames], [markerless_prefix])
-        self.assertEqual(processor._turn_marker, TurnMarker.PASSTHROUGH)
-        self.assertEqual(processor._turn_text_buffer, "")
-
         await processor._push_turn_text(" continuation")
+
         text_frames = [f for f in pushed_frames if isinstance(f, LLMTextFrame)]
-        self.assertEqual([f.text for f in text_frames], [markerless_prefix, " continuation"])
+        self.assertEqual([f.text for f in text_frames], [markerless_text, " continuation"])
+        self.assertEqual(processor._turn_marker, TurnMarker.PASSTHROUGH)
 
         # Reset must not replay text that was already forwarded in passthrough mode.
         await processor._turn_reset()
         text_frames = [f for f in pushed_frames if isinstance(f, LLMTextFrame)]
-        self.assertEqual([f.text for f in text_frames], [markerless_prefix, " continuation"])
+        self.assertEqual([f.text for f in text_frames], [markerless_text, " continuation"])
         self.assertIsNone(processor._turn_marker)
 
-    async def test_marker_at_end_of_prefix_is_detected_before_passthrough(self):
-        """A marker inside the bounded prefix keeps its existing completion behavior."""
+    async def test_marker_after_initial_text_is_forwarded(self):
+        """Only the first non-empty response character has marker semantics."""
         processor = MockProcessor()
         pushed_frames = []
         processor.push_frame = AsyncMock(
             side_effect=lambda f, *args, **kwargs: pushed_frames.append(f)
         )
+        processor._start_incomplete_timeout = AsyncMock()
 
-        await processor._push_turn_text(
-            f"{'x' * 63}{USER_TURN_COMPLETE_MARKER} Hello after the marker"
-        )
+        await processor._push_turn_text("Custom-instruction preamble ")
+        await processor._push_turn_text(USER_TURN_INCOMPLETE_SHORT_MARKER)
 
         text_frames = [f for f in pushed_frames if isinstance(f, LLMTextFrame)]
-        self.assertEqual([f.text for f in text_frames], ["Hello after the marker"])
-        self.assertEqual(processor._turn_marker, TurnMarker.COMPLETE)
+        self.assertEqual(
+            [f.text for f in text_frames],
+            ["Custom-instruction preamble ", USER_TURN_INCOMPLETE_SHORT_MARKER],
+        )
+        self.assertEqual([f for f in pushed_frames if isinstance(f, LLMMarkerFrame)], [])
+        self.assertEqual(processor._turn_marker, TurnMarker.PASSTHROUGH)
+        processor._start_incomplete_timeout.assert_not_awaited()
 
     async def test_turn_state_reset_after_llm_full_response_end_frame(self):
         """Test that the turn marker is reset when LLMFullResponseEndFrame is pushed."""
@@ -262,9 +201,8 @@ class TestUserUserTurnCompletionLLMServiceMixin(unittest.IsolatedAsyncioTestCase
             end_frame = LLMFullResponseEndFrame()
             await processor.push_frame(end_frame)
 
-        # The marker must now be cleared — ready for the next response
+        # The marker must now be cleared — ready for the next response.
         self.assertIsNone(processor._turn_marker)
-        self.assertEqual(processor._turn_text_buffer, "")
 
     async def test_new_response_cancels_pending_incomplete_timeout(self):
         """A new LLM response starting must cancel a pending incomplete timeout.
@@ -514,6 +452,37 @@ class TestSystemInstructionComposition(unittest.IsolatedAsyncioTestCase):
 
         expected = "Base prompt.\n\nCustom turn instructions."
         self.assertEqual(service._settings.system_instruction, expected)
+
+    async def test_custom_instructions_keep_late_marker_compatibility(self):
+        """A configured custom protocol may place an incomplete marker after a preamble."""
+        service = MockLLMService()
+        await service._update_settings(LLMSettings(filter_incomplete_user_turns=True))
+        await service._update_settings(
+            LLMSettings(
+                user_turn_completion_config=UserTurnCompletionConfig(
+                    instructions="Explain your decision, then emit ○ when the turn is incomplete."
+                )
+            )
+        )
+        pushed_frames = []
+        service.push_frame = AsyncMock(
+            side_effect=lambda f, *args, **kwargs: pushed_frames.append(f)
+        )
+        service._start_incomplete_timeout = AsyncMock()
+
+        # The marker crosses a provider-fragment boundary after the former cap.
+        await service._push_llm_text("x" * 64)
+        self.assertEqual(pushed_frames, [])
+        await service._push_llm_text(USER_TURN_INCOMPLETE_SHORT_MARKER)
+
+        self.assertEqual([f for f in pushed_frames if isinstance(f, LLMTextFrame)], [])
+        marker_frames = [f for f in pushed_frames if isinstance(f, LLMMarkerFrame)]
+        self.assertEqual([f.marker for f in marker_frames], [USER_TURN_INCOMPLETE_SHORT_MARKER])
+        self.assertEqual(service._turn_marker, TurnMarker.INCOMPLETE)
+        self.assertEqual(
+            [f for f in pushed_frames if isinstance(f, UserTurnInferenceCompletedFrame)], []
+        )
+        service._start_incomplete_timeout.assert_awaited_once()
 
     async def test_simultaneous_enable_and_system_instruction_change(self):
         """Enabling turn completion and changing system_instruction in the same delta
