@@ -6,6 +6,7 @@
 
 import asyncio
 import unittest
+from unittest.mock import patch
 
 from pipecat.audio.vad.vad_analyzer import VADAnalyzer, VADParams, VADState
 from pipecat.audio.vad.vad_controller import VADController
@@ -97,9 +98,9 @@ class TestVADController(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(speech_stopped)
 
     async def test_speech_activity_event(self):
-        """Test that on_speech_activity event is triggered while speaking."""
+        """Test that on_speech_activity uses elapsed rather than wall-clock time."""
         analyzer = MockVADAnalyzer()
-        controller = VADController(analyzer)
+        controller = VADController(analyzer, speech_activity_period=0.2)
 
         activity_count = 0
 
@@ -113,11 +114,23 @@ class TestVADController(unittest.IsolatedAsyncioTestCase):
 
         audio_frame = InputAudioRawFrame(audio=b"\x00" * 1024, sample_rate=16000, num_channels=1)
 
-        # Activity events fire while in SPEAKING state
         analyzer.set_next_state(VADState.SPEAKING)
-        await controller.process_frame(audio_frame)
-        await controller.process_frame(audio_frame)
+        with (
+            patch(
+                "pipecat.audio.vad.vad_controller.monotonic",
+                side_effect=[0.01, 0.11, 0.22],
+            ),
+            patch(
+                "pipecat.audio.vad.vad_controller.time.time",
+                side_effect=[1000.0, 1_000_000.0, -1_000_000.0],
+            ) as wall_clock,
+        ):
+            await controller.process_frame(audio_frame)
+            await controller.process_frame(audio_frame)
+            await controller.process_frame(audio_frame)
+
         self.assertEqual(activity_count, 2)
+        wall_clock.assert_not_called()
 
     async def test_push_frame_event(self):
         """Test that push_frame emits on_push_frame event."""

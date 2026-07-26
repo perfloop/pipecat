@@ -12,6 +12,7 @@ and emit events when speech starts, stops, or is actively detected.
 
 import asyncio
 import time
+from time import monotonic
 
 from loguru import logger
 
@@ -91,8 +92,9 @@ class VADController(BaseObject):
 
         self._task_manager: BaseTaskManager | None = None
 
-        # Last time a on_speech_activity was triggered.
-        self._speech_activity_time = 0
+        # Last time an on_speech_activity event was triggered. None guarantees
+        # the first SPEAKING frame emits activity regardless of clock uptime.
+        self._speech_activity_time: float | None = None
         # How often a on_speech_activity event should be triggered (value should
         # be greater than the audio chunks to have any effect).
         self._speech_activity_period = speech_activity_period
@@ -173,7 +175,7 @@ class VADController(BaseObject):
         self._vad_state = await self._handle_vad(frame.audio, self._vad_state)
 
         if self._vad_state == VADState.SPEAKING:
-            await self._call_event_handler("on_speech_activity")
+            await self._maybe_speech_activity()
 
     async def _handle_vad(self, audio: bytes, vad_state: VADState) -> VADState:
         """Handle Voice Activity Detection results and trigger appropriate events."""
@@ -215,10 +217,13 @@ class VADController(BaseObject):
             await asyncio.sleep(self._audio_idle_timeout)
 
     async def _maybe_speech_activity(self):
-        """Handle user speaking frame."""
-        diff_time = time.time() - self._speech_activity_time
-        if diff_time >= self._speech_activity_period:
-            self._speech_activity_time = time.time()
+        """Emit speech activity when the configured period has elapsed."""
+        current_time = monotonic()
+        if (
+            self._speech_activity_time is None
+            or current_time - self._speech_activity_time >= self._speech_activity_period
+        ):
+            self._speech_activity_time = current_time
             await self._call_event_handler("on_speech_activity")
 
     async def push_frame(self, frame: Frame, direction: FrameDirection = FrameDirection.DOWNSTREAM):
