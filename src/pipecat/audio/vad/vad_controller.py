@@ -92,10 +92,8 @@ class VADController(BaseObject):
         Raises:
             ValueError: If speech_activity_period is not a finite real number.
         """
-        if (
-            isinstance(speech_activity_period, bool)
-            or not isinstance(speech_activity_period, Real)
-            or not math.isfinite(speech_activity_period)
+        if not isinstance(speech_activity_period, Real) or not math.isfinite(
+            speech_activity_period
         ):
             raise ValueError("speech_activity_period must be a finite real number")
 
