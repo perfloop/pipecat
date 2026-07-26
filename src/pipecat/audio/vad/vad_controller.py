@@ -91,6 +91,8 @@ class VADController(BaseObject):
         Raises:
             ValueError: If speech_activity_period is not a finite int or float.
         """
+        # Python integers have arbitrary precision and are always finite, so
+        # only float values need a finite-value check.
         if type(speech_activity_period) not in (int, float) or (
             type(speech_activity_period) is float and not math.isfinite(speech_activity_period)
         ):
@@ -185,6 +187,7 @@ class VADController(BaseObject):
         self._vad_state = await self._handle_vad(frame.audio, self._vad_state)
 
         if self._vad_state == VADState.SPEAKING:
+            # Preserve per-input activity delivery for non-positive periods.
             if self._speech_activity_period <= 0:
                 await self._call_event_handler("on_speech_activity")
             else:
@@ -231,6 +234,8 @@ class VADController(BaseObject):
 
     async def _maybe_speech_activity(self):
         """Emit speech activity when the configured period has elapsed."""
+        # Store and compare one monotonic instant so wall-clock changes cannot
+        # alter the interval.
         current_time = time.monotonic()
         if (
             self._speech_activity_time is None

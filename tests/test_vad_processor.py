@@ -44,7 +44,7 @@ class TestVADProcessor(unittest.IsolatedAsyncioTestCase):
     def _make_audio_frame(self):
         return InputAudioRawFrame(audio=b"\x00" * 1024, sample_rate=16000, num_channels=1)
 
-    def test_rejects_invalid_speech_activity_period(self):
+    def test_rejects_invalid_speech_activity_period_at_construction(self):
         """Test that invalid activity periods fail during processor construction."""
         for speech_activity_period in ("0.2", float("nan"), float("inf"), float("-inf"), True):
             with self.subTest(speech_activity_period=speech_activity_period):
@@ -102,7 +102,7 @@ class TestVADProcessor(unittest.IsolatedAsyncioTestCase):
             ],
         )
 
-    async def test_pushes_one_user_speaking_frame_with_large_period(self):
+    async def test_pushes_one_user_speaking_frame_with_large_integer_period(self):
         """Test that a large integer period pushes only the first SPEAKING activity."""
         processor = VADProcessor(
             vad_analyzer=MockVADAnalyzer([VADState.SPEAKING, VADState.SPEAKING]),
@@ -121,7 +121,7 @@ class TestVADProcessor(unittest.IsolatedAsyncioTestCase):
             ],
         )
 
-    async def test_pushes_user_speaking_frame(self):
+    async def test_pushes_user_speaking_frame_for_non_positive_period(self):
         """Test that non-positive periods push UserSpeakingFrame while speaking."""
         for speech_activity_period in (0, -0.2):
             with self.subTest(speech_activity_period=speech_activity_period):
