@@ -52,11 +52,16 @@ class VADProcessor(FrameProcessor):
         Args:
             vad_analyzer: The VADAnalyzer instance for processing audio.
             speech_activity_period: Minimum interval in seconds between
-                UserSpeakingFrame pushes. Defaults to 0.2.
+                UserSpeakingFrame pushes. A non-positive value bypasses
+                throttling and pushes a frame for every SPEAKING input.
+                Defaults to 0.2.
             audio_idle_timeout: Timeout in seconds to force speech stop
                 when no audio frames are received while in SPEAKING state.
                 Set to 0 to disable. Defaults to 1.0.
             **kwargs: Additional arguments passed to parent class.
+
+        Raises:
+            ValueError: If speech_activity_period is not a finite real number.
         """
         super().__init__(**kwargs)
         self._vad_controller = VADController(

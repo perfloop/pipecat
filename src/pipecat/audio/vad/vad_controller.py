@@ -81,7 +81,9 @@ class VADController(BaseObject):
         Args:
             vad_analyzer: The `VADAnalyzer` instance for processing audio.
             speech_activity_period: Minimum interval in seconds between
-                `on_speech_activity` events. Defaults to 0.2.
+                `on_speech_activity` events. A non-positive value bypasses
+                throttling and emits an event for every SPEAKING input.
+                Defaults to 0.2.
             audio_idle_timeout: Timeout in seconds to force speech stop
                 when no audio frames are received while in SPEAKING state.
                 This handles cases like mic mute mid-speech.
@@ -106,8 +108,8 @@ class VADController(BaseObject):
         # Last time an on_speech_activity event was triggered. None guarantees
         # the first SPEAKING frame emits activity regardless of clock uptime.
         self._speech_activity_time: float | None = None
-        # How often a on_speech_activity event should be triggered (value should
-        # be greater than the audio chunks to have any effect).
+        # How often an on_speech_activity event should be triggered. A
+        # non-positive value emits an event for every SPEAKING input.
         self._speech_activity_period = speech_activity_period
 
         # Audio idle detection: force speech stop when no audio arrives
