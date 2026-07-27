@@ -12,9 +12,7 @@ and emit events when speech starts, stops, or is actively detected.
 
 import asyncio
 import math
-import numbers
 import time
-from decimal import Decimal
 
 from loguru import logger
 
@@ -74,14 +72,14 @@ class VADController(BaseObject):
         self,
         vad_analyzer: VADAnalyzer,
         *,
-        speech_activity_period: float = 0.2,
+        speech_activity_period: int | float = 0.2,
         audio_idle_timeout: float = 1.0,
     ):
         """Initialize the VAD controller.
 
         Args:
             vad_analyzer: The `VADAnalyzer` instance for processing audio.
-            speech_activity_period: Finite real-number minimum interval in
+            speech_activity_period: Finite int or float minimum interval in
                 seconds between `on_speech_activity` events. A non-positive
                 value bypasses throttling and emits an event for every
                 SPEAKING input. Defaults to 0.2.
@@ -91,23 +89,17 @@ class VADController(BaseObject):
                 Set to 0 to disable. Defaults to 1.0.
 
         Raises:
-            ValueError: If speech_activity_period is not a finite real number.
+            ValueError: If speech_activity_period is not a finite int or float.
         """
-        # Rational values and Decimal can determine finiteness without a
-        # lossy conversion to float.
         if (
-            isinstance(speech_activity_period, bool)
-            or not isinstance(speech_activity_period, (numbers.Real, Decimal))
+            not isinstance(speech_activity_period, (int, float))
+            or isinstance(speech_activity_period, bool)
             or (
-                isinstance(speech_activity_period, Decimal)
-                and not speech_activity_period.is_finite()
-            )
-            or (
-                not isinstance(speech_activity_period, (numbers.Rational, Decimal))
+                isinstance(speech_activity_period, float)
                 and not math.isfinite(speech_activity_period)
             )
         ):
-            raise ValueError("speech_activity_period must be a finite real number")
+            raise ValueError("speech_activity_period must be a finite int or float")
 
         super().__init__()
         self._vad_analyzer = vad_analyzer
@@ -246,7 +238,8 @@ class VADController(BaseObject):
     async def _maybe_speech_activity(self):
         """Emit speech activity when the configured period has elapsed."""
         # Store and compare one monotonic instant so wall-clock changes cannot
-        # alter the interval.
+        # alter the interval. Only timestamps are subtracted, so large integer
+        # periods remain in the comparison without float conversion.
         current_time = time.monotonic()
         if (
             self._speech_activity_time is None

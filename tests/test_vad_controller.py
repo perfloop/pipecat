@@ -6,11 +6,7 @@
 
 import asyncio
 import unittest
-from decimal import Decimal
-from fractions import Fraction
 from unittest.mock import patch
-
-import numpy as np
 
 from pipecat.audio.vad.vad_analyzer import VADAnalyzer, VADParams, VADState
 from pipecat.audio.vad.vad_controller import VADController
@@ -103,41 +99,26 @@ class TestVADController(unittest.IsolatedAsyncioTestCase):
 
     def test_rejects_invalid_speech_activity_period_at_construction(self):
         """Test that invalid activity periods fail during controller construction."""
-        for speech_activity_period in (
-            "0.2",
-            float("nan"),
-            float("inf"),
-            float("-inf"),
-            Decimal("NaN"),
-            Decimal("Infinity"),
-            True,
-        ):
+        for speech_activity_period in ("0.2", float("nan"), float("inf"), float("-inf"), True):
             with self.subTest(speech_activity_period=speech_activity_period):
-                with self.assertRaisesRegex(ValueError, "finite real number"):
+                with self.assertRaisesRegex(ValueError, "finite int or float"):
                     VADController(
                         MockVADAnalyzer(),
                         speech_activity_period=speech_activity_period,
                     )
 
-    async def test_accepts_real_speech_activity_periods(self):
-        """Test that supported real periods process repeated SPEAKING inputs."""
+    async def test_accepts_int_and_float_subclasses(self):
+        """Test that numeric subclasses process repeated SPEAKING inputs."""
+
+        class FloatSubclass(float):
+            pass
 
         class IntSubclass(int):
             pass
 
-        periods = (
-            np.float64(0.2),
-            np.float32(0.2),
-            np.int64(1),
-            Decimal("0.2"),
-            Decimal("1e999999"),
-            Fraction(1, 5),
-            Fraction(10**1000, 3),
-            IntSubclass(1),
-        )
         audio_frame = InputAudioRawFrame(audio=b"\x00" * 1024, sample_rate=16000, num_channels=1)
 
-        for speech_activity_period in periods:
+        for speech_activity_period in (FloatSubclass(0.2), IntSubclass(1)):
             with self.subTest(speech_activity_period=speech_activity_period):
                 analyzer = MockVADAnalyzer()
                 controller = VADController(analyzer, speech_activity_period=speech_activity_period)
@@ -158,8 +139,8 @@ class TestVADController(unittest.IsolatedAsyncioTestCase):
 
                 self.assertEqual(activity_count, 1)
 
-    async def test_large_integer_speech_activity_period_handles_repeated_speaking(self):
-        """Test that a large integer period emits only the first SPEAKING activity."""
+    async def test_large_integer_speech_activity_period_does_not_overflow_when_repeated(self):
+        """Test that a large integer period throttles repeated SPEAKING input."""
         analyzer = MockVADAnalyzer()
         controller = VADController(analyzer, speech_activity_period=1 << 100000)
         activity_count = 0
