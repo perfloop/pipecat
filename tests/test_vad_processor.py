@@ -88,6 +88,36 @@ class TestVADProcessor(unittest.IsolatedAsyncioTestCase):
         ]
         self.assertEqual(len(activity_calls), 1)
 
+    async def test_normalizes_period_subclasses_before_user_speaking_dispatch(self):
+        """Test that forwarded period subclasses cannot alter throttled delivery."""
+
+        class AlwaysNonPositive(float):
+            def __le__(self, other):
+                return True
+
+        class RaisingComparison(float):
+            def __le__(self, other):
+                raise AssertionError("period comparison must use the normalized value")
+
+        for speech_activity_period in (AlwaysNonPositive(0.2), RaisingComparison(0.2)):
+            with self.subTest(speech_activity_period=speech_activity_period):
+                processor = VADProcessor(
+                    vad_analyzer=MockVADAnalyzer([VADState.SPEAKING, VADState.SPEAKING]),
+                    speech_activity_period=speech_activity_period,
+                )
+
+                await run_test(
+                    processor,
+                    frames_to_send=[self._make_audio_frame(), self._make_audio_frame()],
+                    expected_down_frames=[
+                        SpeechControlParamsFrame,
+                        InputAudioRawFrame,
+                        VADUserStartedSpeakingFrame,
+                        UserSpeakingFrame,
+                        InputAudioRawFrame,
+                    ],
+                )
+
     async def test_pushes_started_speaking_frame(self):
         """Test that VADUserStartedSpeakingFrame is pushed when speech starts."""
         analyzer = MockVADAnalyzer([VADState.QUIET, VADState.SPEAKING])
