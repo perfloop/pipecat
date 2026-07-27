@@ -107,18 +107,20 @@ class TestVADController(unittest.IsolatedAsyncioTestCase):
                         speech_activity_period=speech_activity_period,
                     )
 
-    async def test_accepts_int_and_float_subclasses(self):
-        """Test that numeric subclasses process repeated SPEAKING inputs."""
+    async def test_normalizes_speech_activity_period_subclasses(self):
+        """Test that period subclasses cannot alter throttled dispatch."""
 
-        class FloatSubclass(float):
-            pass
+        class AlwaysNonPositive(float):
+            def __le__(self, other):
+                return True
 
-        class IntSubclass(int):
-            pass
+        class RaisingComparison(float):
+            def __le__(self, other):
+                raise AssertionError("period comparison must use the normalized value")
 
         audio_frame = InputAudioRawFrame(audio=b"\x00" * 1024, sample_rate=16000, num_channels=1)
 
-        for speech_activity_period in (FloatSubclass(0.2), IntSubclass(1)):
+        for speech_activity_period in (AlwaysNonPositive(0.2), RaisingComparison(0.2)):
             with self.subTest(speech_activity_period=speech_activity_period):
                 analyzer = MockVADAnalyzer()
                 controller = VADController(analyzer, speech_activity_period=speech_activity_period)

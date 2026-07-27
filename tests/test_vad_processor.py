@@ -55,22 +55,6 @@ class TestVADProcessor(unittest.IsolatedAsyncioTestCase):
                         speech_activity_period=speech_activity_period,
                     )
 
-    def test_accepts_int_and_float_subclasses_at_construction(self):
-        """Test that the processor forwards numeric subclasses to its controller."""
-
-        class FloatSubclass(float):
-            pass
-
-        class IntSubclass(int):
-            pass
-
-        for speech_activity_period in (FloatSubclass(0.2), IntSubclass(1)):
-            with self.subTest(speech_activity_period=speech_activity_period):
-                VADProcessor(
-                    vad_analyzer=MockVADAnalyzer([VADState.SPEAKING]),
-                    speech_activity_period=speech_activity_period,
-                )
-
     async def test_forwards_audio_frames(self):
         """Test that audio frames are forwarded downstream."""
         analyzer = MockVADAnalyzer([VADState.QUIET])

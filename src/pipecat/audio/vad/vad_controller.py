@@ -80,9 +80,9 @@ class VADController(BaseObject):
         Args:
             vad_analyzer: The `VADAnalyzer` instance for processing audio.
             speech_activity_period: Finite int or float minimum interval in
-                seconds between `on_speech_activity` events. A non-positive
-                value bypasses throttling and emits an event for every
-                SPEAKING input. Defaults to 0.2.
+                seconds between `on_speech_activity` events. Boolean values
+                are rejected. A non-positive value bypasses throttling and
+                emits an event for every SPEAKING input. Defaults to 0.2.
             audio_idle_timeout: Timeout in seconds to force speech stop
                 when no audio frames are received while in SPEAKING state.
                 This handles cases like mic mute mid-speech.
@@ -91,15 +91,16 @@ class VADController(BaseObject):
         Raises:
             ValueError: If speech_activity_period is not a finite int or float.
         """
-        if (
-            not isinstance(speech_activity_period, (int, float))
-            or isinstance(speech_activity_period, bool)
-            or (
-                isinstance(speech_activity_period, float)
-                and not math.isfinite(speech_activity_period)
-            )
+        if not isinstance(speech_activity_period, (int, float)) or isinstance(
+            speech_activity_period, bool
         ):
             raise ValueError("speech_activity_period must be a finite int or float")
+        if isinstance(speech_activity_period, float):
+            speech_activity_period = float(speech_activity_period)
+            if not math.isfinite(speech_activity_period):
+                raise ValueError("speech_activity_period must be a finite int or float")
+        else:
+            speech_activity_period = int(speech_activity_period)
 
         super().__init__()
         self._vad_analyzer = vad_analyzer

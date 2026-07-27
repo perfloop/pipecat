@@ -52,9 +52,9 @@ class VADProcessor(FrameProcessor):
         Args:
             vad_analyzer: The VADAnalyzer instance for processing audio.
             speech_activity_period: Finite int or float minimum interval in
-                seconds between UserSpeakingFrame pushes. A non-positive value
-                bypasses throttling and pushes a frame for every SPEAKING
-                input. Defaults to 0.2.
+                seconds between UserSpeakingFrame pushes. Boolean values are
+                rejected. A non-positive value bypasses throttling and pushes
+                a frame for every SPEAKING input. Defaults to 0.2.
             audio_idle_timeout: Timeout in seconds to force speech stop
                 when no audio frames are received while in SPEAKING state.
                 Set to 0 to disable. Defaults to 1.0.
