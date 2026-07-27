@@ -16,6 +16,7 @@ from pipecat.frames.frames import (
     VADUserStoppedSpeakingFrame,
 )
 from pipecat.processors.audio.vad_processor import VADProcessor
+from pipecat.processors.frame_processor import FrameDirection
 from pipecat.tests.utils import run_test
 
 
@@ -106,17 +107,29 @@ class TestVADProcessor(unittest.IsolatedAsyncioTestCase):
                     speech_activity_period=speech_activity_period,
                 )
 
-                await run_test(
-                    processor,
-                    frames_to_send=[self._make_audio_frame(), self._make_audio_frame()],
-                    expected_down_frames=[
-                        SpeechControlParamsFrame,
-                        InputAudioRawFrame,
-                        VADUserStartedSpeakingFrame,
-                        UserSpeakingFrame,
-                        InputAudioRawFrame,
-                    ],
-                )
+                with (
+                    patch.object(processor, "push_frame", new_callable=AsyncMock),
+                    patch.object(
+                        processor, "broadcast_frame", new_callable=AsyncMock
+                    ) as broadcast_frame,
+                    patch(
+                        "pipecat.audio.vad.vad_controller.time.monotonic",
+                        side_effect=[0.01, 0.01, 0.11, 0.11],
+                    ),
+                ):
+                    await processor.process_frame(
+                        self._make_audio_frame(), FrameDirection.DOWNSTREAM
+                    )
+                    await processor.process_frame(
+                        self._make_audio_frame(), FrameDirection.DOWNSTREAM
+                    )
+
+                activity_calls = [
+                    call
+                    for call in broadcast_frame.await_args_list
+                    if call.args[0] is UserSpeakingFrame
+                ]
+                self.assertEqual(len(activity_calls), 1)
 
     async def test_pushes_started_speaking_frame(self):
         """Test that VADUserStartedSpeakingFrame is pushed when speech starts."""
